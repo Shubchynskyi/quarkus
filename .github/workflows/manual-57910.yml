@@ -1,0 +1,70 @@
+name: Manual Quarkus 57910
+
+on:
+  workflow_dispatch:
+    inputs:
+      failed_test:
+        description: 'Optional failed test class/method; empty runs all core/processor tests'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  processor:
+    name: Core processor - Ubuntu - JDK 21
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FAILED_TEST: ${{ inputs.failed_test }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Record checked source
+        run: |
+          git rev-parse HEAD | tee checked-sha.txt
+          git status --short
+          java -version
+          export MAVEN_OPTS="${MAVEN_OPTS:+$MAVEN_OPTS }-Xmx4g"
+          echo "MAVEN_OPTS=$MAVEN_OPTS" >> "$GITHUB_ENV"
+      - name: Validate test selection
+        shell: bash
+        run: |
+          if [[ -n "$FAILED_TEST" && ! "$FAILED_TEST" =~ ^io\.quarkus\.annotation\.processor\.[A-Za-z0-9_.]+Test(\#[A-Za-z0-9_*]+)?$ ]]; then
+            echo 'Select one fully qualified processor test class, optionally followed by #method.'
+            exit 1
+          fi
+      - name: Build dependencies without tests
+        run: |
+          set -o pipefail
+          ./mvnw -B -V --no-transfer-progress -Dscan=false -Dno-build-cache \
+            -DskipTests -pl core/processor -am install 2>&1 | tee dependencies.log
+      - name: Run processor tests
+        shell: bash
+        run: |
+          set -o pipefail
+          test_args=()
+          if [[ -n "$FAILED_TEST" ]]; then
+            test_args+=("-Dtest=$FAILED_TEST")
+          fi
+          ./mvnw -B -V --no-transfer-progress -Dscan=false -Dno-build-cache \
+            -DskipTests=false -Dstart-containers -Dtest-containers \
+            -pl core/processor "${test_args[@]}" install 2>&1 | tee processor.log
+      - name: Save evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: quarkus-57910-ubuntu-jdk21
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            checked-sha.txt
+            dependencies.log
+            processor.log
+            core/processor/target/surefire-reports/TEST-*.xml
+            core/processor/target/surefire-reports/*.txt
